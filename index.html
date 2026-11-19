@@ -1,0 +1,138 @@
+<!doctype html>
+<html lang="tr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Tersten Co-op</title>
+<style>
+  body{font-family:system-ui,sans-serif;background:#111;color:#eee;max-width:420px;margin:0 auto;padding:16px}
+  h1{font-size:1.3rem}
+  section{background:#1c1c1c;border-radius:12px;padding:14px;margin:12px 0;display:none}
+  body[data-s="wait"] #wait, body[data-s="speak"] #speak, body[data-s="waitClip"] #waitClip,
+  body[data-s="listen"] #listen, body[data-s="waitGuess"] #waitGuess, body[data-s="result"] #result{display:block}
+  button{font-size:1.05rem;padding:14px;margin:4px 0;width:100%;border:0;border-radius:10px;background:#2d6cdf;color:#fff;touch-action:none;user-select:none}
+  button.rec{background:#d33}
+  button.alt{background:#444}
+  input{width:100%;box-sizing:border-box;padding:10px;border-radius:8px;border:0;background:#333;color:#eee}
+  #status{color:#999;font-size:.9rem}
+</style>
+</head>
+<body data-s="wait">
+<h1>🔁 Tersten Co-op</h1>
+<div id="status">Bağlanılıyor...</div>
+
+<section id="wait">
+  <b>Arkadaşına bu linki gönder:</b>
+  <input id="link" readonly>
+  <button id="copy" class="alt">📋 Linki Kopyala</button>
+  <small>Arkadaşın linke girince oyun başlar.</small>
+</section>
+
+<section id="speak">
+  <b>Sıra sende:</b> butona <u>basılı tut</u>, bir şey söyle, bırak. Kayıt arkadaşına gider.
+  <button class="hold" data-kind="clip">🎤 Bas-Konuş</button>
+</section>
+
+<section id="waitClip"><b>Arkadaşın bir şey söylüyor...</b> Bekle.</section>
+
+<section id="listen">
+  <b>Tersten dinle</b> ve ne dediğini tahmin et.
+  <button id="play">▶ Tersten Çal</button>
+  <b>Sonra tahminini söyle:</b>
+  <button class="hold" data-kind="guess">🎤 Bas-Konuş</button>
+</section>
+
+<section id="waitGuess"><b>Arkadaşın tersten dinliyor...</b> Tahminini bekle.</section>
+
+<section id="result">
+  <b>Sonuç</b>
+  <button id="playOrig" class="alt">▶ Orijinal (düz)</button>
+  <button id="playGuess" class="alt">▶ Tahmin</button>
+  <button id="next" class="alt">➡ Sıradaki Tur (roller değişir)</button>
+</section>
+
+<script src="https://unpkg.com/peerjs@1.5.4/dist/peerjs.min.js"></script>
+<script>
+const $ = id => document.getElementById(id);
+const ctx = new (window.AudioContext || window.webkitAudioContext)();
+const setState = s => document.body.dataset.s = s;
+const status = t => $('status').textContent = t;
+let conn, stream, orig, guess, speaker;
+
+const peer = new Peer();
+const hostId = location.hash.slice(1);
+peer.on('error', e => status('Hata: ' + e.type));
+peer.on('open', id => {
+  if (hostId) {
+    speaker = false; setState('waitClip'); status('Bağlanıyor...');
+    wire(peer.connect(hostId, {reliable: true}));
+  } else {
+    speaker = true;
+    $('link').value = location.href.split('#')[0] + '#' + id;
+    setState('wait'); status('Arkadaşın bekleniyor');
+    peer.on('connection', wire);
+  }
+});
+
+function wire(c) {
+  conn = c;
+  c.on('open', () => { status('Bağlandı ✔'); setState(speaker ? 'speak' : 'waitClip'); });
+  c.on('close', () => status('Bağlantı koptu'));
+  c.on('data', async m => {
+    if (m.t === 'clip') { orig = await decode(m.data); setState('listen'); }
+    else if (m.t === 'guess') { guess = await decode(m.data); setState('result'); }
+    else if (m.t === 'next') swapRoles();
+  });
+}
+
+const decode = ab => ctx.decodeAudioData(ab);
+const swapRoles = () => { speaker = !speaker; orig = guess = null; setState(speaker ? 'speak' : 'waitClip'); };
+
+function holdToRecord(btn) {
+  let rec, chunks;
+  const start = async e => {
+    e.preventDefault();
+    try { stream ||= await navigator.mediaDevices.getUserMedia({audio: true}); }
+    catch { alert('Mikrofon izni gerekli (adres https/localhost olmalı).'); return; }
+    chunks = [];
+    rec = new MediaRecorder(stream);
+    rec.ondataavailable = ev => chunks.push(ev.data);
+    rec.onstop = async () => {
+      const ab = await new Blob(chunks).arrayBuffer();
+      conn.send({t: btn.dataset.kind, data: ab.slice(0)});
+      const buf = await decode(ab);
+      if (btn.dataset.kind === 'clip') { orig = buf; setState('waitGuess'); }
+      else { guess = buf; setState('result'); }
+    };
+    rec.start();
+    btn.classList.add('rec'); btn.textContent = '⏺ Kayıt...';
+  };
+  const stop = () => {
+    if (rec && rec.state === 'recording') rec.stop();
+    btn.classList.remove('rec'); btn.textContent = '🎤 Bas-Konuş';
+  };
+  btn.addEventListener('pointerdown', start);
+  btn.addEventListener('pointerup', stop);
+  btn.addEventListener('pointerleave', stop);
+}
+
+function play(buf, reversed) {
+  ctx.resume();
+  const out = ctx.createBuffer(buf.numberOfChannels, buf.length, buf.sampleRate);
+  for (let c = 0; c < buf.numberOfChannels; c++) {
+    const d = buf.getChannelData(c).slice();
+    out.copyToChannel(reversed ? d.reverse() : d, c);
+  }
+  const src = ctx.createBufferSource();
+  src.buffer = out; src.connect(ctx.destination); src.start();
+}
+
+document.querySelectorAll('.hold').forEach(holdToRecord);
+$('play').onclick = () => play(orig, true);
+$('playOrig').onclick = () => play(orig, false);
+$('playGuess').onclick = () => play(guess, false);
+$('next').onclick = () => { conn.send({t: 'next'}); swapRoles(); };
+$('copy').onclick = () => navigator.clipboard.writeText($('link').value);
+</script>
+</body>
+</html>
