@@ -152,7 +152,8 @@ const $ = id => document.getElementById(id);
 const ctx = new (window.AudioContext || window.webkitAudioContext)();
 const setState = s => document.body.dataset.s = s;
 const status = (t, cls = '') => { $('status').textContent = t; $('status').className = cls; };
-let conn, stream, orig, imit, fin, speaker;
+const VERSION = '5';
+let conn, stream, orig, imit, fin, speaker, peerVersion;
 let mood = 'idle'; // idle | rec | play — background reacts to it
 
 // analyser feeds the background; muted sink keeps it processing in every browser
@@ -169,7 +170,8 @@ peer.on('open', id => {
     wire(peer.connect(hostId, {reliable: true}));
   } else {
     speaker = true;
-    $('link').value = location.href.split('#')[0] + '#' + id;
+    // ?v= makes the friend's browser fetch the new page instead of a cached old one
+    $('link').value = location.origin + location.pathname + '?v=' + VERSION + '#' + id;
     setState('wait'); status('Arkadaşın bekleniyor');
     peer.on('connection', wire);
   }
@@ -177,11 +179,17 @@ peer.on('open', id => {
 
 function wire(c) {
   conn = c;
-  c.on('open', () => { status('Bağlandı', 'ok'); setState(speaker ? 'speak' : 'waitClip'); });
+  c.on('open', () => {
+    status('Bağlandı', 'ok'); setState(speaker ? 'speak' : 'waitClip');
+    c.send({t: 'hello', v: VERSION});
+    // old versions never say hello, so silence also means a version mismatch
+    setTimeout(() => { if (peerVersion !== VERSION) versionWarning(); }, 4000);
+  });
   c.on('close', () => status('Bağlantı koptu', 'bad'));
   c.on('data', async m => {
     try {
-      if (m.t === 'clip') { orig = await decode(m.data); setState('listen'); }
+      if (m.t === 'hello') { peerVersion = m.v; if (m.v !== VERSION) versionWarning(); }
+      else if (m.t === 'clip') { orig = await decode(m.data); setState('listen'); }
       else if (m.t === 'imit') imit = await decode(m.data); // speaker keeps waiting for the final guess
       else if (m.t === 'final') { fin = await decode(m.data); setState('result'); }
       else if (m.t === 'all') playAll();
@@ -189,6 +197,8 @@ function wire(c) {
     } catch (err) { status('Ses alınamadı: ' + err.message, 'bad'); }
   });
 }
+
+const versionWarning = () => status('Sürümler farklı: ikiniz de sayfayı kapatıp yeni linkle açın', 'bad');
 
 // PeerJS may hand binary back as a typed array; decodeAudioData needs a plain ArrayBuffer
 const decode = d => ctx.decodeAudioData(d instanceof ArrayBuffer ? d : d.buffer.slice(d.byteOffset, d.byteOffset + d.byteLength));
