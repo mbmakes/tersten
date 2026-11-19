@@ -33,7 +33,7 @@
   section{display:none;margin-top:18px;padding:22px 18px;border-radius:24px;background:var(--glass);border:1px solid var(--line);
           backdrop-filter:blur(14px);-webkit-backdrop-filter:blur(14px);text-align:center;animation:rise .45s cubic-bezier(.2,.8,.2,1)}
   body[data-s="wait"] #wait, body[data-s="speak"] #speak, body[data-s="waitClip"] #waitClip,
-  body[data-s="listen"] #listen, body[data-s="waitGuess"] #waitGuess, body[data-s="result"] #result{display:block}
+  body[data-s="listen"] #listen, body[data-s="listen2"] #listen2, body[data-s="waitGuess"] #waitGuess, body[data-s="result"] #result{display:block}
   @keyframes rise{from{opacity:0;transform:translateY(14px) scale(.98)}}
   h2{font-family:'Unbounded',sans-serif;font-weight:600;font-size:1.05rem;margin:0 0 6px}
   p{margin:0;color:var(--muted);font-size:.95rem;line-height:1.45}
@@ -62,6 +62,7 @@
   .pill:hover{filter:brightness(1.1)} .pill:active{transform:scale(.97)}
   .ghost{background:transparent;border:1px solid var(--line);color:var(--text);box-shadow:none}
   .ghost:hover{background:rgba(255,255,255,.06)}
+  .pill small{font-weight:400;opacity:.7;font-size:.75rem}
   .rewind{display:inline-block;animation:rw 1.4s linear infinite}
   @keyframes rw{0%,100%{transform:translateX(0)}50%{transform:translateX(-4px)}}
 
@@ -109,12 +110,21 @@
   </section>
 
   <section id="listen">
-    <div class="step">Sıra sende</div>
+    <div class="step">Aşama 1 · Taklit</div>
     <h2>Tersten dinle</h2>
-    <p>İstediğin kadar dinle, sonra duyduğunu taklit et.</p>
+    <p>İstediğin kadar dinle, sonra duyduğunu aynen taklit et.</p>
     <button id="play" class="pill"><span class="rewind">◀◀</span> Tersten Çal</button>
     <div class="divider"></div>
-    <button class="hold" data-kind="guess"></button>
+    <button class="hold" data-kind="imit"></button>
+  </section>
+
+  <section id="listen2">
+    <div class="step">Aşama 2 · Tahmin</div>
+    <h2>Taklidini tersten dinle</h2>
+    <p>Bu sefer kendi taklidin ters çalacak. Orijinalde ne vardı? Tahminini söyle.</p>
+    <button id="play2" class="pill"><span class="rewind">◀◀</span> Taklidi Tersten Çal</button>
+    <div class="divider"></div>
+    <button class="hold" data-kind="final"></button>
   </section>
 
   <section id="waitGuess">
@@ -125,11 +135,13 @@
 
   <section id="result">
     <div class="step">Sonuç</div>
-    <h2>Taklit düze çevrildi!</h2>
-    <p>Taklit ters çevrilip ikinize birden çalar. Orijinale ne kadar yakın?</p>
-    <button id="reveal" class="pill">✨ Düze Çevir — ikimiz de dinleyelim</button>
-    <button id="playOrig" class="pill ghost">▶ Orijinal</button>
-    <button id="playGuess" class="pill ghost">▶ Taklit (ters hali)</button>
+    <h2>Baştan sona</h2>
+    <button id="all" class="pill">✨ Hepsini sırayla çal — ikimizde birden</button>
+    <button class="pill ghost step-btn" data-i="0">1 · Orijinal söz</button>
+    <button class="pill ghost step-btn" data-i="1">2 · Orijinal tersten <small>(arkadaşın bunu duydu)</small></button>
+    <button class="pill ghost step-btn" data-i="2">3 · Arkadaşın taklidi</button>
+    <button class="pill ghost step-btn" data-i="3">4 · Taklit tersten <small>(arkadaşın bunu duydu)</small></button>
+    <button class="pill ghost step-btn" data-i="4">5 · Son tahmin</button>
     <button id="next" class="pill ghost">↺ Sıradaki Tur — roller değişir</button>
   </section>
 </main>
@@ -140,7 +152,7 @@ const $ = id => document.getElementById(id);
 const ctx = new (window.AudioContext || window.webkitAudioContext)();
 const setState = s => document.body.dataset.s = s;
 const status = (t, cls = '') => { $('status').textContent = t; $('status').className = cls; };
-let conn, stream, orig, guess, speaker;
+let conn, stream, orig, imit, fin, speaker;
 let mood = 'idle'; // idle | rec | play — background reacts to it
 
 // analyser feeds the background; muted sink keeps it processing in every browser
@@ -170,8 +182,9 @@ function wire(c) {
   c.on('data', async m => {
     try {
       if (m.t === 'clip') { orig = await decode(m.data); setState('listen'); }
-      else if (m.t === 'guess') { guess = await decode(m.data); setState('result'); }
-      else if (m.t === 'reveal') play(guess, true);
+      else if (m.t === 'imit') imit = await decode(m.data); // speaker keeps waiting for the final guess
+      else if (m.t === 'final') { fin = await decode(m.data); setState('result'); }
+      else if (m.t === 'all') playAll();
       else if (m.t === 'next') swapRoles();
     } catch (err) { status('Ses alınamadı: ' + err.message, 'bad'); }
   });
@@ -194,7 +207,7 @@ function toWav(buf) { // mono, 16-bit PCM
   }
   return ab;
 }
-const swapRoles = () => { speaker = !speaker; orig = guess = null; setState(speaker ? 'speak' : 'waitClip'); };
+const swapRoles = () => { speaker = !speaker; orig = imit = fin = null; setState(speaker ? 'speak' : 'waitClip'); };
 
 /* ---------- recording ---------- */
 const IDLE = '<span class="ico">🎤</span><span class="lbl">Basılı tut</span>';
@@ -222,8 +235,10 @@ function holdToRecord(btn) {
         const buf = await decode(await new Blob(chunks).arrayBuffer());
         // send plain WAV: webm/opus from Chrome can't be decoded by Safari/iOS
         conn.send({t: btn.dataset.kind, data: toWav(buf)});
-        if (btn.dataset.kind === 'clip') { orig = buf; setState('waitGuess'); }
-        else { guess = buf; setState('result'); }
+        const kind = btn.dataset.kind;
+        if (kind === 'clip') { orig = buf; setState('waitGuess'); }
+        else if (kind === 'imit') { imit = buf; setState('listen2'); }
+        else { fin = buf; setState('result'); }
       } catch (err) { status('Gönderilemedi: ' + err.message, 'bad'); }
     };
     rec.start();
@@ -252,15 +267,22 @@ function play(buf, reversed) {
   const src = ctx.createBufferSource();
   src.buffer = out; src.connect(ctx.destination); src.connect(analyser);
   mood = 'play';
-  src.onended = () => { if (mood === 'play') mood = 'idle'; };
-  src.start();
+  return new Promise(done => {
+    src.onended = () => { if (mood === 'play') mood = 'idle'; done(); };
+    src.start();
+  });
 }
+
+async function playAll() {
+  for (const [buf, rev] of STEPS()) { await play(buf, rev); await new Promise(r => setTimeout(r, 700)); }
+}
+const STEPS = () => [[orig, false], [orig, true], [imit, false], [imit, true], [fin, false]];
 
 document.querySelectorAll('.hold').forEach(holdToRecord);
 $('play').onclick = () => play(orig, true);
-$('playOrig').onclick = () => play(orig, false);
-$('playGuess').onclick = () => play(guess, true);
-$('reveal').onclick = () => { conn.send({t: 'reveal'}); play(guess, true); };
+$('play2').onclick = () => play(imit, true);
+document.querySelectorAll('.step-btn').forEach(b => b.onclick = () => play(...STEPS()[b.dataset.i]));
+$('all').onclick = () => { conn.send({t: 'all'}); playAll(); };
 $('next').onclick = () => { conn.send({t: 'next'}); swapRoles(); };
 $('copy').onclick = async () => {
   await navigator.clipboard.writeText($('link').value);
