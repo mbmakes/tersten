@@ -125,9 +125,11 @@
 
   <section id="result">
     <div class="step">Sonuç</div>
-    <h2>Ne kadar yakın?</h2>
-    <button id="playOrig" class="pill">▶ Orijinal</button>
-    <button id="playGuess" class="pill ghost">▶ Tahmin</button>
+    <h2>Taklit düze çevrildi!</h2>
+    <p>Taklit ters çevrilip ikinize birden çalar. Orijinale ne kadar yakın?</p>
+    <button id="reveal" class="pill">✨ Düze Çevir — ikimiz de dinleyelim</button>
+    <button id="playOrig" class="pill ghost">▶ Orijinal</button>
+    <button id="playGuess" class="pill ghost">▶ Taklit (ters hali)</button>
     <button id="next" class="pill ghost">↺ Sıradaki Tur — roller değişir</button>
   </section>
 </main>
@@ -169,6 +171,7 @@ function wire(c) {
     try {
       if (m.t === 'clip') { orig = await decode(m.data); setState('listen'); }
       else if (m.t === 'guess') { guess = await decode(m.data); setState('result'); }
+      else if (m.t === 'reveal') play(guess, true);
       else if (m.t === 'next') swapRoles();
     } catch (err) { status('Ses alınamadı: ' + err.message, 'bad'); }
   });
@@ -256,7 +259,8 @@ function play(buf, reversed) {
 document.querySelectorAll('.hold').forEach(holdToRecord);
 $('play').onclick = () => play(orig, true);
 $('playOrig').onclick = () => play(orig, false);
-$('playGuess').onclick = () => play(guess, false);
+$('playGuess').onclick = () => play(guess, true);
+$('reveal').onclick = () => { conn.send({t: 'reveal'}); play(guess, true); };
 $('next').onclick = () => { conn.send({t: 'next'}); swapRoles(); };
 $('copy').onclick = async () => {
   await navigator.clipboard.writeText($('link').value);
