@@ -15,7 +15,26 @@
   html,body{margin:0;height:100%}
   body{background:var(--bg);color:var(--text);font-family:'Space Grotesk',system-ui,sans-serif;overflow-x:hidden}
   #bg{position:fixed;inset:0;width:100%;height:100%;z-index:0}
-  main{position:relative;z-index:1;max-width:440px;margin:0 auto;padding:28px 16px 40px;min-height:100%;display:flex;flex-direction:column}
+  main{position:relative;z-index:1;max-width:440px;margin:0 auto;padding:28px 16px 96px;min-height:100%;display:flex;flex-direction:column}
+
+  /* music control, bottom right */
+  #music{position:fixed;right:14px;bottom:14px;z-index:5;display:flex;align-items:center;gap:6px;padding:6px 14px 6px 6px;border-radius:99px;
+         background:rgba(20,14,36,.55);border:1px solid var(--line);backdrop-filter:blur(14px);-webkit-backdrop-filter:blur(14px);
+         box-shadow:0 8px 30px rgba(0,0,0,.4)}
+  #mute{position:relative;width:40px;height:40px;border-radius:50%;display:grid;place-items:center;background:linear-gradient(135deg,var(--pink),var(--violet));
+        box-shadow:0 0 18px rgba(255,61,139,.4);transition:transform .15s}
+  #mute:hover{transform:scale(1.08)} #mute:active{transform:scale(.94)}
+  #mute svg{width:20px;height:20px;fill:none;stroke:#fff;stroke-width:2;stroke-linecap:round;stroke-linejoin:round}
+  #mute .waves,#mute .x{display:none} #music[data-m="on"] .waves{display:inline} #music[data-m="off"] .x{display:inline}
+  #music[data-m="off"] #mute{background:#3a3450;box-shadow:none}
+  .eq{display:flex;align-items:flex-end;gap:2px;height:16px;width:16px;margin:0 4px 0 2px;opacity:.9}
+  .eq i{flex:1;background:var(--cyan);border-radius:2px;height:30%;transition:height .3s}
+  #music.live .eq i{animation:eq 1s ease-in-out infinite} #music.live .eq i:nth-child(2){animation-delay:.2s} #music.live .eq i:nth-child(3){animation-delay:.4s}
+  @keyframes eq{50%{height:100%}}
+  #vol{-webkit-appearance:none;appearance:none;width:84px;height:6px;border-radius:99px;outline-offset:6px;cursor:pointer;
+       background:linear-gradient(90deg,var(--cyan) var(--p,50%),rgba(255,255,255,.18) var(--p,50%))}
+  #vol::-webkit-slider-thumb{-webkit-appearance:none;width:16px;height:16px;border-radius:50%;background:#fff;box-shadow:0 0 10px var(--cyan);border:0}
+  #vol::-moz-range-thumb{width:16px;height:16px;border-radius:50%;background:#fff;box-shadow:0 0 10px var(--cyan);border:0}
 
   header{text-align:center;margin-bottom:18px}
   h1{font-family:'Unbounded',sans-serif;font-weight:800;font-size:2rem;margin:0;letter-spacing:.02em}
@@ -146,19 +165,69 @@
   </section>
 </main>
 
+<div id="music" data-m="on">
+  <button id="mute" aria-label="Müziği kapat" aria-pressed="false">
+    <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 9v6h4l5 4V5L8 9H4z"/><path class="waves" d="M16.5 8.5a5 5 0 0 1 0 7M19 6a8.5 8.5 0 0 1 0 12"/><path class="x" d="M17 9l5 6M22 9l-5 6"/></svg>
+  </button>
+  <div class="eq" aria-hidden="true"><i></i><i></i><i></i></div>
+  <input id="vol" type="range" min="0" max="100" value="50" aria-label="Müzik sesi">
+</div>
+<audio id="bgm" src="Soft%20Focus%20Lounge.mp3" loop preload="auto"></audio>
+
 <script src="https://unpkg.com/peerjs@1.5.4/dist/peerjs.min.js"></script>
 <script>
 const $ = id => document.getElementById(id);
 const ctx = new (window.AudioContext || window.webkitAudioContext)();
 const setState = s => document.body.dataset.s = s;
 const status = (t, cls = '') => { $('status').textContent = t; $('status').className = cls; };
-const VERSION = '5';
+const VERSION = '6';
 let conn, stream, orig, imit, fin, speaker, peerVersion;
 let mood = 'idle'; // idle | rec | play — background reacts to it
 
 // analyser feeds the background; muted sink keeps it processing in every browser
 const analyser = ctx.createAnalyser(); analyser.fftSize = 512;
 const sink = ctx.createGain(); sink.gain.value = 0; analyser.connect(sink).connect(ctx.destination);
+
+/* ---------- background music: fades out while anyone-here records/plays, fades back in after ---------- */
+const bgm = $('bgm'), music = $('music'), vol = $('vol'), muteBtn = $('mute');
+const musicGain = ctx.createGain();                       // user's volume
+const duckGain = ctx.createGain(); duckGain.gain.value = 0; // fade in / fade out
+const musicAn = ctx.createAnalyser(); musicAn.fftSize = 256; // lets the background breathe with the music
+ctx.createMediaElementSource(bgm).connect(musicGain).connect(duckGain).connect(musicAn).connect(ctx.destination);
+let muted = false, musicStarted = false, lastBusy = 0, duckWant = 0;
+try { const s = JSON.parse(localStorage.getItem('tersten-music')); if (s) { vol.value = s.v; muted = !!s.m; } } catch {}
+
+function applyMusicUi() {
+  vol.style.setProperty('--p', vol.value + '%');
+  music.dataset.m = muted || +vol.value === 0 ? 'off' : 'on';
+  muteBtn.setAttribute('aria-pressed', muted);
+  muteBtn.setAttribute('aria-label', muted ? 'Müziği aç' : 'Müziği kapat');
+  musicGain.gain.setTargetAtTime(muted ? 0 : (vol.value / 100) ** 2 * .7, ctx.currentTime, .05); // squared = natural-feeling slider
+  try { localStorage.setItem('tersten-music', JSON.stringify({v: vol.value, m: muted})); } catch {}
+}
+vol.oninput = () => { if (muted && +vol.value > 0) muted = false; applyMusicUi(); };
+muteBtn.onclick = () => { muted = !muted; if (!muted && +vol.value === 0) vol.value = 50; applyMusicUi(); };
+applyMusicUi();
+
+// browsers only allow sound after a user gesture, so the music starts on the first tap
+const startMusic = () => {
+  if (musicStarted) return;
+  musicStarted = true; ctx.resume();
+  bgm.play().catch(() => musicStarted = false);
+};
+['pointerdown', 'keydown'].forEach(e => addEventListener(e, startMusic));
+
+function duckMusic() { // called every frame
+  const busy = mood !== 'idle', now = performance.now();
+  if (busy) lastBusy = now;
+  const want = !busy && now - lastBusy > 1200 ? 1 : 0; // wait out the gaps between clips before fading back in
+  if (want !== duckWant) {
+    duckWant = want;
+    duckGain.gain.cancelScheduledValues(ctx.currentTime);
+    duckGain.gain.setTargetAtTime(want, ctx.currentTime, want ? .9 : .1);
+  }
+  music.classList.toggle('live', !muted && !bgm.paused && duckGain.gain.value > .05);
+}
 
 /* ---------- networking ---------- */
 const peer = new Peer();
@@ -303,7 +372,7 @@ $('copy').onclick = async () => {
 /* ---------- background: waves that flow backwards and react to sound ---------- */
 const cv = $('bg'), g = cv.getContext('2d');
 const slow = matchMedia('(prefers-reduced-motion: reduce)').matches ? 0.15 : 1;
-const td = new Uint8Array(analyser.fftSize);
+const td = new Uint8Array(analyser.fftSize), mtd = new Uint8Array(musicAn.fftSize);
 let W, H, level = 0, hue = 300, speed = 1, t = 0;
 const motes = Array.from({length: 50}, () => ({x: Math.random(), y: Math.random(), r: Math.random() * 1.8 + .4, v: Math.random() * .6 + .2}));
 
@@ -317,9 +386,13 @@ function resize() {
 addEventListener('resize', resize); resize();
 
 function frame() {
+  duckMusic();
   analyser.getByteTimeDomainData(td);
   let sum = 0; for (const v of td) sum += ((v - 128) / 128) ** 2;
-  level += (Math.min(Math.sqrt(sum / td.length) * 4, 1) - level) * .15;
+  musicAn.getByteTimeDomainData(mtd);
+  let msum = 0; for (const v of mtd) msum += ((v - 128) / 128) ** 2;
+  const voice = Math.min(Math.sqrt(sum / td.length) * 4, 1), song = Math.min(Math.sqrt(msum / mtd.length) * 6, .35);
+  level += (Math.max(voice, song) - level) * .15;
 
   const target = mood === 'rec' ? {h: 355, s: 2.2} : mood === 'play' ? {h: 190, s: 3} : {h: 300, s: 1};
   hue += (target.h - hue) * .03; speed += (target.s - speed) * .05;
@@ -328,7 +401,6 @@ function frame() {
   g.globalCompositeOperation = 'source-over';
   g.fillStyle = '#0b0716'; g.fillRect(0, 0, W, H); // full clear: translucent fades leave 8-bit ghost lines
   g.globalCompositeOperation = 'lighter';
-  g.shadowBlur = 12 + level * 25;
 
   for (let i = 0; i < 5; i++) {
     const amp = (H * .06 + i * 6) * (1 + level * 5);
@@ -339,12 +411,11 @@ function frame() {
       const y = base + Math.sin(x * f + t * (1.5 + i * .3)) * amp * env + Math.sin(x * f * 2.3 + t * 2.1 + i) * amp * .35 * env;
       x ? g.lineTo(x, y) : g.moveTo(x, y);
     }
-    g.strokeStyle = g.shadowColor = `hsla(${hue + i * 22},95%,${60 + level * 20}%,${.45 + level * .4})`;
-    g.lineWidth = 1.5 + level * 3;
-    g.stroke();
+    const col = `${hue + i * 22},95%,${60 + level * 20}%`;
+    g.strokeStyle = `hsla(${col},${.12 + level * .15})`; g.lineWidth = 9 + level * 10; g.stroke(); // cheap glow: a wide faint pass instead of shadowBlur
+    g.strokeStyle = `hsla(${col},${.45 + level * .4})`; g.lineWidth = 1.5 + level * 3; g.stroke();
   }
 
-  g.shadowBlur = 0;
   for (const m of motes) {
     m.x -= m.v * .0015 * speed * slow; // drift leftwards: everything rewinds
     if (m.x < 0) { m.x = 1; m.y = Math.random(); }
